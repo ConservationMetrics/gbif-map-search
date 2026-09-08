@@ -1,5 +1,9 @@
 const API = "https://api.gbif.org/v1";
-const MAX_QUERY_WKT_LENGTH = 7500;
+// GBIF occurrence search is GET-only. Past ~3900 characters the API edge often
+// returns a Tomcat 400 HTML page with no CORS headers, which browsers surface
+// as a CORS failure. Cap below that and leave room for facet query params.
+// Measured 2026-09 against api.gbif.org — see README.
+const MAX_QUERY_URL_LENGTH = 3600;
 const MOBILE_BREAKPOINT = 860;
 const FRAME_LEFT = 0.1;
 const FRAME_TOP = 0.2;
@@ -727,10 +731,10 @@ function showCopyToast() {
 }
 
 // Shareable URLs carry the query geometry. Complex polygons that would exceed
-// GBIF/browser URL limits are replaced with their derived bounding box.
+// GBIF GET URL limits are replaced with their derived bounding box.
 function geometryForUrl(area) {
   if (!area?.wkt) return null;
-  if (area.wkt.length <= MAX_QUERY_WKT_LENGTH) return area.wkt;
+  if (!wktExceedsQueryLimit(area.wkt)) return area.wkt;
 
   const bounds = boundsFromGeoJSON(area.geojson);
   return bounds ? bboxToWkt(bounds) : null;
@@ -1636,7 +1640,7 @@ class QueryError extends Error {
 }
 
 function wktForQuery(area) {
-  if (area.wkt.length <= MAX_QUERY_WKT_LENGTH) {
+  if (!wktExceedsQueryLimit(area.wkt)) {
     return { wkt: area.wkt, usedBboxFallback: false };
   }
 
@@ -1648,13 +1652,28 @@ function wktForQuery(area) {
   return { wkt: bboxToWkt(bounds), usedBboxFallback: true };
 }
 
+// Estimate the heaviest in-app search URL (facet paging) for a given WKT.
+function occurrenceSearchUrlLength(wkt) {
+  const search = new URLSearchParams();
+  search.set("geometry", wkt);
+  search.set("limit", "0");
+  search.append("facet", "basisOfRecord");
+  search.set("facetLimit", String(FACET_PAGE_SIZE));
+  search.set("facetOffset", "100000");
+  return `${API}/occurrence/search?${search}`.length;
+}
+
+function wktExceedsQueryLimit(wkt) {
+  return !wkt || occurrenceSearchUrlLength(wkt) > MAX_QUERY_URL_LENGTH;
+}
+
 function formatQueryError(error, geometry = "") {
-  const wktLength = geometry?.length ?? 0;
+  const geometryTooLong = wktExceedsQueryLimit(geometry);
 
   if (error instanceof QueryError) {
     switch (error.kind) {
       case "network":
-        if (wktLength > MAX_QUERY_WKT_LENGTH) {
+        if (geometryTooLong) {
           return "Could not reach GBIF. The selected geometry is very complex and may exceed browser URL limits. Try drawing a simpler bounding box instead.";
         }
         return "Could not reach GBIF. Check your internet connection, ad blockers, or try again in a moment.";
@@ -1672,7 +1691,7 @@ function formatQueryError(error, geometry = "") {
   }
 
   if (error?.message === "Failed to fetch") {
-    if (wktLength > MAX_QUERY_WKT_LENGTH) {
+    if (geometryTooLong) {
       return "Could not reach GBIF. The selected geometry is very complex and may exceed browser URL limits. Try drawing a simpler bounding box instead.";
     }
     return "Could not reach GBIF. Check your internet connection or try again in a moment.";

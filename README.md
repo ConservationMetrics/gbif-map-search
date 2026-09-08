@@ -1,8 +1,34 @@
 # GBIF Map Search
 
-Static web app to preview [GBIF](https://www.gbif.org/) occurrence data for a map area without downloading individual records.
+Static web app to preview [GBIF](https://www.gbif.org/) occurrence data for a
+map area without downloading individual records.
 
-Draw a bounding box on the Mapbox map, drop a GeoJSON file, and query the GBIF Occurrence Search API for facet summaries: total count, species, datasets, publishers, years, and basis of record. Everything runs in the browser.
+Draw a bounding box on the Mapbox map, drop a GeoJSON file, and query the
+GBIF Occurrence Search API for facet summaries: total count, species, datasets,
+publishers, years, and basis of record. Everything runs in the browser.
+
+## Geometry search and limits
+
+GBIF's occurrence **search** API accepts `geometry` as a GET query parameter
+(WKT).
+
+Long or high-vertex polygons make that URL too long for GBIF's edge
+stack: around ~3,900 characters the API often returns a Tomcat `400 Bad
+Request` HTML page **without** CORS headers. In the browser that looks like a
+CORS failure (`No 'Access-Control-Allow-Origin' header`), even though the real
+problem is request size. Smaller polygons work normally and include
+`Access-Control-Allow-Origin: *`.
+
+This app estimates the search URL (including facet params) and, when it would
+exceed ~3,600 characters, queries the polygon's **bounding box** instead. The
+map still shows the original GeoJSON; the status line notes when the bbox
+fallback was used.
+
+This is a known pain point across the GBIF ecosystem:
+
+- [GBIF portal feedback #1588 — WKT: Geometry too large](https://github.com/gbif/portal-feedback/issues/1588)
+  (Solr/`414` / URL-length failures; portal vs API limits)
+- [Community forum — geoJSON searches and the 2,000-character URL warning](https://discourse.gbif.org/t/using-geojson-for-occurrence-searches-troubleshooting-issues/2629)
 
 ## API reference
 
