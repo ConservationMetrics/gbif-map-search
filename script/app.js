@@ -32,6 +32,8 @@ const WIKIPEDIA_TITLES_PER_REQUEST = 50;
 const WIKIMEDIA_TIMEOUT_MS = 10000;
 
 const drawBtn = document.getElementById("drawBtn");
+const copyUrlBtn = document.getElementById("copyUrlBtn");
+const copyToast = document.getElementById("copyToast");
 const clearBtn = document.getElementById("clearBtn");
 const submitBtn = document.getElementById("submitBtn");
 const drawHint = document.getElementById("drawHint");
@@ -98,6 +100,7 @@ tableNext.addEventListener("click", () => {
 });
 drawBtn.addEventListener("click", toggleDrawMode);
 confirmFrameBtn.addEventListener("click", confirmMobileFrame);
+copyUrlBtn.addEventListener("click", copyShareUrl);
 clearBtn.addEventListener("click", clearArea);
 submitBtn.addEventListener("click", runQuery);
 geojsonInput.addEventListener("change", onGeoJSONSelected);
@@ -459,6 +462,7 @@ function initMap() {
 
     setStatus("");
     bindDrawHandlers();
+    applyGeometryFromUrl();
   });
 
   map.on("error", (event) => {
@@ -657,6 +661,7 @@ function clearArea() {
   inventory = null;
   speciesLoading = false;
   updateAreaFeature(null);
+  copyUrlBtn.disabled = true;
   clearBtn.disabled = true;
   submitBtn.disabled = true;
   tableSearch.disabled = true;
@@ -673,14 +678,17 @@ function clearArea() {
     '<tr class="placeholder-row"><td colspan="2">Draw an area or drop GeoJSON, then query GBIF.</td></tr>';
   drawHint.textContent = "Draw a box or drop GeoJSON on the map.";
   setStatus("");
+  syncGeometryUrl(null);
 }
 
 function setQueryArea(area) {
   currentArea = area;
   updateAreaFeature(area.geojson);
+  copyUrlBtn.disabled = false;
   clearBtn.disabled = false;
   submitBtn.disabled = false;
   drawHint.textContent = area.label;
+  syncGeometryUrl(geometryForUrl(area));
 
   const bounds = boundsFromGeoJSON(area.geojson);
   if (bounds) {
@@ -691,6 +699,74 @@ function setQueryArea(area) {
       ],
       { padding: 48, duration: 800 },
     );
+  }
+}
+
+async function copyShareUrl() {
+  if (!currentArea) return;
+
+  syncGeometryUrl(geometryForUrl(currentArea));
+  const url = window.location.href;
+
+  try {
+    await navigator.clipboard.writeText(url);
+    showCopyToast();
+  } catch {
+    setStatus("Could not copy the link. Copy it from the address bar.", true);
+  }
+}
+
+let copyToastTimer = null;
+
+function showCopyToast() {
+  clearTimeout(copyToastTimer);
+  copyToast.classList.add("visible");
+  copyToastTimer = setTimeout(() => {
+    copyToast.classList.remove("visible");
+  }, 1200);
+}
+
+// Shareable URLs carry the query geometry. Complex polygons that would exceed
+// GBIF/browser URL limits are replaced with their derived bounding box.
+function geometryForUrl(area) {
+  if (!area?.wkt) return null;
+  if (area.wkt.length <= MAX_QUERY_WKT_LENGTH) return area.wkt;
+
+  const bounds = boundsFromGeoJSON(area.geojson);
+  return bounds ? bboxToWkt(bounds) : null;
+}
+
+function syncGeometryUrl(wkt) {
+  const url = new URL(window.location.href);
+  if (wkt) {
+    url.searchParams.set("geometry", wkt);
+  } else {
+    url.searchParams.delete("geometry");
+  }
+  const next = `${url.pathname}${url.search}${url.hash}`;
+  if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== next) {
+    history.replaceState(null, "", next);
+  }
+}
+
+function applyGeometryFromUrl() {
+  const wkt = new URL(window.location.href).searchParams.get("geometry");
+  if (!wkt?.trim()) return;
+
+  try {
+    const geojson = wktToFeatureCollection(wkt);
+    if (!geojson) {
+      setStatus("Could not parse geometry from the URL.", true);
+      return;
+    }
+    const bounds = boundsFromGeoJSON(geojson);
+    setQueryArea({
+      wkt: wkt.trim(),
+      geojson,
+      label: bounds ? formatBounds(bounds) : "Shared area",
+    });
+  } catch {
+    setStatus("Could not parse geometry from the URL.", true);
   }
 }
 
@@ -2110,6 +2186,87 @@ function polygonToWkt(coordinates) {
     .map((ring) => `(${ring.map(([lon, lat]) => `${lon} ${lat}`).join(", ")})`)
     .join(", ");
   return `(${rings})`;
+}
+
+function wktToFeatureCollection(raw) {
+  const wkt = String(raw).trim();
+  let polygons;
+
+  if (/^MULTIPOLYGON\b/i.test(wkt)) {
+    const inner = unwrapWktCall(wkt, "MULTIPOLYGON");
+    if (inner == null) return null;
+    polygons = splitWktPolygons(inner);
+  } else if (/^POLYGON\b/i.test(wkt)) {
+    const inner = unwrapWktCall(wkt, "POLYGON");
+    if (inner == null) return null;
+    const rings = parseWktRings(inner);
+    if (!rings) return null;
+    polygons = [rings];
+  } else {
+    return null;
+  }
+
+  return polygons?.length ? polygonsToFeatureCollection(polygons) : null;
+}
+
+function unwrapWktCall(wkt, name) {
+  const match = wkt.match(new RegExp(`^${name}\\s*\\(`, "i"));
+  if (!match || !wkt.endsWith(")")) return null;
+  return wkt.slice(match[0].length, -1).trim();
+}
+
+function parseWktRings(body) {
+  const rings = [];
+  const ringRe = /\(([^()]*)\)/g;
+  let match;
+  while ((match = ringRe.exec(body))) {
+    const coords = parseWktCoordList(match[1]);
+    if (!coords.length) return null;
+    rings.push(coords);
+  }
+  return rings.length ? rings : null;
+}
+
+function parseWktCoordList(text) {
+  return text
+    .split(",")
+    .map((pair) => pair.trim())
+    .filter(Boolean)
+    .map((pair) => {
+      const parts = pair.split(/\s+/);
+      const lon = Number(parts[0]);
+      const lat = Number(parts[1]);
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+        throw new Error("Invalid WKT coordinate.");
+      }
+      return [lon, lat];
+    });
+}
+
+function splitWktPolygons(body) {
+  const polygons = [];
+  let depth = 0;
+  let start = -1;
+
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch === "(") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === ")") {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        const rings = parseWktRings(body.slice(start + 1, i).trim());
+        if (!rings) return null;
+        polygons.push(rings);
+        start = -1;
+      } else if (depth < 0) {
+        return null;
+      }
+    }
+  }
+
+  return depth === 0 && polygons.length ? polygons : null;
 }
 
 function boundsFromGeoJSON(geojson) {

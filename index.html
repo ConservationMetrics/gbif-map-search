@@ -669,6 +669,41 @@
         background: transparent;
       }
 
+      .copy-url-wrap {
+        position: relative;
+      }
+
+      .copy-toast {
+        position: absolute;
+        left: 50%;
+        bottom: calc(100% + 6px);
+        transform: translateX(-50%) translateY(4px);
+        padding: 3px 7px;
+        border-radius: 4px;
+        background: var(--text);
+        color: #fff;
+        font-size: 0.72rem;
+        font-weight: 600;
+        line-height: 1.2;
+        white-space: nowrap;
+        pointer-events: none;
+        opacity: 0;
+        transition:
+          opacity 0.15s ease,
+          transform 0.15s ease;
+      }
+
+      .copy-toast.visible {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .copy-toast {
+          transition: none;
+        }
+      }
+
       .results-header {
         display: grid;
         gap: 16px;
@@ -1093,6 +1128,14 @@
               accept=".geojson,.json,application/geo+json,application/json"
               hidden
             />
+            <span class="copy-url-wrap">
+              <button type="button" class="btn btn-ghost" id="copyUrlBtn" disabled>
+                <i class="fa-solid fa-paperclip"></i> Copy URL link
+              </button>
+              <span class="copy-toast" id="copyToast" aria-hidden="true"
+                >Copied!</span
+              >
+            </span>
             <button type="button" class="btn btn-ghost" id="clearBtn" disabled>
               Clear
             </button>
